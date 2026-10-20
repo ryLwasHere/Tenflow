@@ -1,7 +1,14 @@
 import { readTable, normHeader, type Cell, type Row } from './xlsx';
-import type { HrisRow, Issue, Tap } from './types';
+import type { Approval, HrisRow, Issue, LeavePart, Tap } from './types';
 
 export const MAX_FILE_BYTES = 64 * 1024 * 1024; // FR-08
+
+/** .xlsx is a zip container: reject anything else (e.g. a renamed .csv/.exe) before it reaches the parser. */
+export const looksLikeXlsx = (b: ArrayBuffer | ArrayBufferView) => {
+  const n = Math.min(4, b.byteLength);
+  const h = ArrayBuffer.isView(b) ? new Uint8Array(b.buffer, b.byteOffset, n) : new Uint8Array(b, 0, n); // a Node Buffer is a view: never copy a 64 MB file just to read 4 bytes
+  return h.length === 4 && h[0] === 0x50 && h[1] === 0x4b && h[2] === 3 && h[3] === 4;
+};
 
 const pad = (n: number) => String(n).padStart(2, '0');
 const ymd = (d: Date) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
@@ -50,6 +57,13 @@ const MAX_ISSUES = 500;
 const FP_REQ = ['Employee ID', 'Organization', 'Tanggal', 'Waktu', 'Status'];
 const HR_REQ = ['Employee ID', 'Full Name', 'Organization', 'Date', 'Shift', 'Schedule In', 'Schedule Out', 'Attendance Code'];
 
+const APPROVAL: [RegExp, Approval][] = [[/^(approved?|disetujui|setuju)$/i, 'approved'], [/^(pending|waiting|menunggu)/i, 'pending'], [/^(reject|ditolak|declined?)/i, 'rejected']];
+const PART: [RegExp, LeavePart][] = [[/^(full|1 ?hari|seharian|all ?day)/i, 'full'], [/^(am|pagi|morning|sebelum|first)/i, 'am'], [/^(pm|siang|sore|afternoon|setelah|second)/i, 'pm']];
+export const parseApproval = (s: string): Approval | null => (s ? APPROVAL.find(([r]) => r.test(s))?.[1] ?? null : '');
+export const parsePart = (s: string): LeavePart | null => (s ? PART.find(([r]) => r.test(s))?.[1] ?? null : '');
+/** Fingerprint-machine category -> Work Schedule name; null when not recognised. OB is tested first ("Shifting OB" also contains "shift"). */
+export const parseCategory = (s: string): string | null => (/\bob\b|office partner/i.test(s) ? 'SHIFTING OB' : /shift/i.test(s) ? 'SHIFTING' : /reg|non/i.test(s) ? 'REGULER' : null);
+
 function statusKind(raw: string): { kind: Tap['kind']; aliased: boolean } {
   const s = raw.toLowerCase().replace(/\s+/g, '');
   if (s === 'c/masuk') return { kind: 'in', aliased: false };
@@ -65,9 +79,13 @@ export async function ingest(fpBuf: ArrayBuffer, hrBuf: ArrayBuffer): Promise<In
   const add = (i: Issue) => { if (issues.length < MAX_ISSUES) issues.push(i); else dropped++; };
   const out: Ingested = { taps: [], hris: [], period: '', issues, stats: { fpRows: 0, hrisRows: 0, statusAliased: 0, tapsOutsidePeriod: 0 } };
 
+  const read = (buf: ArrayBuffer, file: 'Fingerprint' | 'HRIS', req: string[], opt: string[]) => {
+    if (!looksLikeXlsx(buf)) { add({ level: 'error', file, where: 'File', message: 'Isi file bukan format .xlsx (mungkin file lain yang diganti nama).' }); return Promise.resolve(null); }
+    return readTable(buf, req, opt).catch((e) => { add({ level: 'error', file, where: 'File', message: `File tidak dapat dibaca sebagai .xlsx (${e.message})` }); return null; });
+  };
   const [fp, hr] = await Promise.all([
-    readTable(fpBuf, FP_REQ, ['Full Name']).catch((e) => { add({ level: 'error', file: 'Fingerprint', where: 'File', message: `File tidak dapat dibaca sebagai .xlsx (${e.message})` }); return null; }),
-    readTable(hrBuf, HR_REQ, ['Check In', 'Check Out', 'Line Manager']).catch((e) => { add({ level: 'error', file: 'HRIS', where: 'File', message: `File tidak dapat dibaca sebagai .xlsx (${e.message})` }); return null; }),
+    read(fpBuf, 'Fingerprint', FP_REQ, ['Full Name', 'Kategori', 'Attendance Category']),
+    read(hrBuf, 'HRIS', HR_REQ, ['Check In', 'Check Out', 'Line Manager', 'Approval Status', 'Leave Period', 'Leave Start', 'Leave End', 'Work Location']),
   ]);
   if (fp && !fp.table) add({ level: 'error', file: 'Fingerprint', where: `Sheet: ${fp.sheets.join(', ')}`, message: `Kolom wajib tidak ditemukan: ${fp.missing.join(', ')}` });
   if (hr && !hr.table) add({ level: 'error', file: 'HRIS', where: `Sheet: ${hr.sheets.join(', ')}`, message: `Kolom wajib tidak ditemukan: ${hr.missing.join(', ')}` });
@@ -77,6 +95,8 @@ export async function ingest(fpBuf: ArrayBuffer, hrBuf: ArrayBuffer): Promise<In
   const g = (r: Row, h: string) => r[normHeader(h)] ?? null;
 
   // HRIS (schedule backbone)
+  const hrisSeen = new Map<string, HrisRow[]>();
+  let hrisDup = 0;
   for (const { n, cells } of hr.table.rows) {
     const id = parseId(g(cells, 'Employee ID'));
     const date = parseDate(g(cells, 'Date'));
@@ -93,8 +113,29 @@ export async function ingest(fpBuf: ArrayBuffer, hrBuf: ArrayBuffer): Promise<In
     }
     const org = String(g(cells, 'Organization') ?? '').trim();
     if (!org) add({ level: 'warning', file: 'HRIS', where: loc(hr.table, n, 'Organization'), message: `Departemen kosong untuk ID ${id} (akan di-flag)` });
-    out.hris.push({ id, name: String(g(cells, 'Full Name') ?? '').trim(), org, date, shift, schedIn, schedOut, code: String(g(cells, 'Attendance Code') ?? '').trim(), manager: String(g(cells, 'Line Manager') ?? '').trim() });
+    const txt = (h: string) => String(g(cells, h) ?? '').trim();
+    const approval = parseApproval(txt('Approval Status')), part = parsePart(txt('Leave Period'));
+    if (approval === null) add({ level: 'warning', file: 'HRIS', where: loc(hr.table, n, 'Approval Status'), message: `Status persetujuan tidak dikenal: "${txt('Approval Status')}" (dianggap tidak diketahui, tidak memberi pengecualian)` });
+    if (part === null) add({ level: 'warning', file: 'HRIS', where: loc(hr.table, n, 'Leave Period'), message: `Periode cuti tidak dikenal: "${txt('Leave Period')}" (dianggap tidak diketahui)` });
+    const ls = parseTime(g(cells, 'Leave Start')), le = parseTime(g(cells, 'Leave End'));
+    if ((ls == null) !== (le == null) || (ls != null && le != null && le <= ls)) add({ level: 'warning', file: 'HRIS', where: loc(hr.table, n, 'Leave Start'), message: 'Jam mulai/selesai cuti tidak lengkap atau tidak berurutan (diabaikan)' });
+    const usable = ls != null && le != null && le > ls;
+    const rec: HrisRow = {
+      id, name: String(g(cells, 'Full Name') ?? '').trim(), org, date, shift, schedIn, schedOut, code: txt('Attendance Code'), manager: txt('Line Manager'),
+      approval: approval ?? '', leavePart: part ?? '', leaveStart: usable ? ls : null, leaveEnd: usable ? le : null,
+      workMode: /wfh/i.test(txt('Work Location')) ? 'wfh' : /wfo|office|kantor/i.test(txt('Work Location')) ? 'wfo' : '',
+      tIn: parseTime(g(cells, 'Check In')), tOut: parseTime(g(cells, 'Check Out')), row: n,
+    };
+    // Re-imported / repeated source rows must not double-count: an identical (id, date) row is folded; a different one is kept for the engine to flag.
+    const key = `${id}|${date}`, prev = hrisSeen.get(key) ?? [];
+    const same = (a: HrisRow) => (['shift', 'code', 'schedIn', 'schedOut', 'approval', 'leavePart', 'leaveStart', 'leaveEnd', 'workMode', 'tIn', 'tOut'] as const).every((f) => a[f] === rec[f]);
+    if (prev.some(same)) { hrisDup++; continue; }
+    hrisSeen.set(key, [...prev, rec]);
+    out.hris.push(rec);
   }
+  if (hrisDup) add({ level: 'warning', file: 'HRIS', where: 'Employee ID + Date', message: `${hrisDup} baris HRIS identik dengan baris lain (ID dan tanggal sama) dan dilewati agar tidak terhitung dua kali` });
+  const hrisConflicts = [...hrisSeen.values()].filter((v) => v.length > 1).length;
+  if (hrisConflicts) add({ level: 'warning', file: 'HRIS', where: 'Employee ID + Date', message: `${hrisConflicts} kombinasi ID dan tanggal memuat baris HRIS yang berbeda; semuanya dipertahankan dan di-flag saat ada tap` });
   out.stats.hrisRows = hr.table.rows.length;
 
   const months = [...new Set(out.hris.map((r) => r.date.slice(0, 7)))].sort();
@@ -116,7 +157,10 @@ export async function ingest(fpBuf: ArrayBuffer, hrBuf: ArrayBuffer): Promise<In
     if (aliased) out.stats.statusAliased++;
     if (!kind) { add({ level: 'warning', file: 'Fingerprint', where: loc(fp.table, n, 'Status'), message: `Status tap tidak dikenal: "${raw}" (tap di-flag)` }); }
     dupKey.add(id);
-    out.taps.push({ id, org: String(g(cells, 'Organization') ?? '').trim(), date, min, kind, raw });
+    const catRaw = String(g(cells, 'Kategori') ?? g(cells, 'Attendance Category') ?? '').trim();
+    const category = catRaw ? parseCategory(catRaw) : null;
+    if (catRaw && !category) add({ level: 'warning', file: 'Fingerprint', where: loc(fp.table, n, 'Kategori'), message: `Kategori fingerprint tidak dikenal: "${catRaw}" (tidak dibandingkan dengan jadwal)` });
+    out.taps.push({ id, org: String(g(cells, 'Organization') ?? '').trim(), date, min, kind, raw, row: n, ...(category ? { category } : {}) });
   }
   out.stats.fpRows = fp.table.rows.length;
   if (out.stats.statusAliased) add({ level: 'warning', file: 'Fingerprint', where: 'Kolom Status', message: `${out.stats.statusAliased} tap berstatus "Keluar"/"Masuk" dinormalisasi menjadi C/Keluar / C/Masuk` });
@@ -137,7 +181,7 @@ export async function ingest(fpBuf: ArrayBuffer, hrBuf: ArrayBuffer): Promise<In
   const hrOnly = [...hrIds].filter((i) => !dupKey.has(i));
   const sample = (a: string[]) => a.slice(0, 8).join(', ') + (a.length > 8 ? `, … (+${a.length - 8})` : '');
   if (fpOnly.length) add({ level: 'warning', file: 'Antar file', where: 'Employee ID', message: `${fpOnly.length} ID ada di Fingerprint tetapi tidak di HRIS: ${sample(fpOnly)}` });
-  if (hrOnly.length) add({ level: 'warning', file: 'Antar file', where: 'Employee ID', message: `${hrOnly.length} ID ada di HRIS tetapi tidak di Fingerprint: ${sample(hrOnly)}` });
+  if (hrOnly.length) add({ level: 'warning', file: 'Antar file', where: 'Employee ID', message: `${hrOnly.length} ID ada di HRIS tetapi tidak di Fingerprint (tidak ada fingerprint, bukan exception): ${sample(hrOnly)}` });
 
   if (dropped) issues.push({ level: 'warning', file: 'Antar file', where: 'Laporan', message: `${dropped} temuan tambahan tidak ditampilkan (batas ${MAX_ISSUES}).` });
   return out;

@@ -29,7 +29,12 @@ export interface Tap {
   min: number;
   kind: 'in' | 'out' | null; // null = status not recognised
   raw: string;
+  row?: number; // source row in the fingerprint sheet (traceability; never used for matching)
+  category?: string; // fingerprint-machine category (REGULER / SHIFTING / SHIFTING OB), only when the file has the optional column
 }
+
+export type Approval = 'approved' | 'pending' | 'rejected' | '';
+export type LeavePart = 'full' | 'am' | 'pm' | '';
 
 export interface HrisRow {
   id: string;
@@ -41,6 +46,15 @@ export interface HrisRow {
   schedOut: number | null;
   code: string;
   manager: string;
+  // Optional Talenta columns. Absent / blank = unknown: never read as approved, as a full day, or as WFH.
+  approval?: Approval;
+  leavePart?: LeavePart;
+  leaveStart?: number | null; // minutes, explicit leave period (takes precedence over leavePart)
+  leaveEnd?: number | null;
+  workMode?: 'wfh' | 'wfo' | '';
+  tIn?: number | null; // Talenta Check In / Check Out (minutes); evidence only, never physical presence
+  tOut?: number | null;
+  row?: number;
 }
 
 export interface Issue {
@@ -81,6 +95,17 @@ export interface DayRecord {
   late: boolean;
   early: boolean;
   flagIds: string[];
+  // Why late/early came out as they did (FR-16 traceability)
+  hasIn: boolean; // the fingerprint has a clock-in / clock-out event
+  hasOut: boolean;
+  support: '' | 'in' | 'out'; // the missing side's time was taken from Talenta (Check In / Check Out)
+  gap: '' | 'masuk' | 'pulang'; // a missing side that is neither supported by Talenta nor explained by approved leave/dinas (flagged incomplete)
+  evaluated: boolean; // false = no usable schedule, late/early were NOT calculated
+  category: string | null; // Work Schedule of this day's HRIS shift (REGULER / SHIFTING / SHIFTING OB ...)
+  lateAfter: number | null; // threshold actually applied (minutes)
+  earlyBefore: number | null;
+  note: string; // human-readable basis, incl. leave adjustments
+  tapsText: string; // every source tap of the day, kept in order, duplicates marked
 }
 
 export interface EmployeeInfo {
@@ -98,7 +123,7 @@ export interface EngineResult {
   employees: EmployeeInfo[];
   days: DayRecord[];
   flags: Flag[];
-  stats: { fpRows: number; hrisRows: number; tapsKept: number; dupRemoved: number; statusAliased: number; tapsOutsidePeriod: number };
+  stats: { fpRows: number; hrisRows: number; tapsKept: number; dupRemoved: number; exactDup: number; dayOffDays: number; statusAliased: number; tapsOutsidePeriod: number };
 }
 
 /** One row of the Final Data sheet. */
@@ -120,6 +145,7 @@ export interface FinalRow {
   lateRate: number | null; // "% Keterlambatan Clock In" = late / clockIn
   lateRemark: string;
   pending: number; // days left out because a flag is still undecided
+  unevaluated: number; // counted days whose schedule could not be resolved: late/early were not calculated for them
 }
 
 /** One row of the Master Data sheet (a counted employee-day). */

@@ -2,3 +2,5 @@ node_modules
 dist
 sample-data
 *.tsbuildinfo
+
+.playwright-mcp

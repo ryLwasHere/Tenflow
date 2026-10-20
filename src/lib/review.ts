@@ -9,13 +9,16 @@ export const undecided = (flags: Flag[], d: Decisions) => flags.filter((f) => !d
  * Final result of one employee-day. A day with any undecided flag is `pending` and counts nowhere (FR-13/14):
  * exclude beats override, override beats accept; accept keeps the tentative (company-formula) result.
  */
-export function resolveDay(day: DayRecord, d: Decisions): { counted: boolean; late: boolean; early: boolean; pending: boolean } {
-  if (day.flagIds.some((id) => !d[id])) return { counted: false, late: false, early: false, pending: true };
+export interface Resolved { counted: boolean; late: boolean; early: boolean; pending: boolean; evaluated: boolean; manual: boolean; excluded: boolean }
+export function resolveDay(day: DayRecord, d: Decisions): Resolved {
+  const none = { counted: false, late: false, early: false, evaluated: false, manual: false };
+  if (day.flagIds.some((id) => !d[id])) return { ...none, pending: true, excluded: false };
   const ds = day.flagIds.map((id) => d[id]);
-  if (ds.some((x) => x.action === 'exclude')) return { counted: false, late: false, early: false, pending: false };
+  if (ds.some((x) => x.action === 'exclude')) return { ...none, pending: false, excluded: true };
   const ov = ds.filter((x) => x.action === 'override' && x.outcome).pop();
-  if (ov) return { counted: true, late: ov.outcome === 'late' || ov.outcome === 'late_early_out', early: ov.outcome === 'early_out' || ov.outcome === 'late_early_out', pending: false };
-  return { counted: true, late: day.late, early: day.early, pending: false };
+  // an override replaces the tentative result but never the stored system result: DayRecord keeps late/early untouched
+  if (ov) return { counted: true, late: ov.outcome === 'late' || ov.outcome === 'late_early_out', early: ov.outcome === 'early_out' || ov.outcome === 'late_early_out', evaluated: true, manual: true, pending: false, excluded: false };
+  return { counted: true, late: day.late, early: day.early, evaluated: day.evaluated, manual: false, pending: false, excluded: false };
 }
 
 /** Week 1..5 of the month for a weekday (weeks start Monday; only weeks containing a weekday are numbered); 0 for weekends. */
@@ -40,7 +43,7 @@ export function summarizeEmployees(res: EngineResult, d: Decisions, rules: RuleS
   const rows = new Map<string, FinalRow>();
   for (const e of res.employees) {
     if (dropped.has(e.id) || !e.hasTaps) continue;
-    rows.set(e.id, { no: 0, id: e.id, name: e.name, dept: e.dept, manager: e.manager, clockIn: 0, late: 0, clockOut: 0, early: 0, complete: 0, remark: '', weeks: [0, 0, 0, 0, 0], office: 0, schedule: e.schedule ?? '', lateRate: null, lateRemark: '', pending: 0 });
+    rows.set(e.id, { no: 0, id: e.id, name: e.name, dept: e.dept, manager: e.manager, clockIn: 0, late: 0, clockOut: 0, early: 0, complete: 0, remark: '', weeks: [0, 0, 0, 0, 0], office: 0, schedule: e.schedule ?? '', lateRate: null, lateRemark: '', pending: 0, unevaluated: 0 });
   }
   for (const day of res.days) {
     const r = rows.get(day.empId);
@@ -49,6 +52,7 @@ export function summarizeEmployees(res: EngineResult, d: Decisions, rules: RuleS
     if (x.pending) { r.pending++; continue; }
     if (!x.counted) continue;
     r.clockIn++; r.clockOut++;
+    if (!x.evaluated) r.unevaluated++;
     if (x.late) r.late++;
     if (x.early) r.early++;
     const w = weekOf(day.date, res.period);
@@ -80,7 +84,8 @@ export function masterRows(res: EngineResult, d: Decisions, rules: RuleSet): Mas
     const shifting = !!s && s.toUpperCase() !== 'REGULER' && sc.has(s.toLowerCase());
     out.push({
       id: e.id, name: e.name, dept: e.dept, date: day.date, first: day.first % 1440, last: day.last % 1440,
-      statusIn: x.late ? 'Telat' : 'On Time', statusOut: x.early ? 'Early Clock Out' : 'Normal', schedule: s,
+      // a day whose schedule could not be resolved is never written as "On Time": it was not evaluated (accepted by a human, counted as present only)
+      statusIn: !x.evaluated ? 'Belum Dievaluasi' : x.late ? 'Telat' : 'On Time', statusOut: !x.evaluated ? 'Belum Dievaluasi' : x.early ? 'Early Clock Out' : 'Normal', schedule: s,
       statusInShift: shifting ? (x.late ? 'TELAT' : 'TIDAK TELAT') : '', statusOutShift: shifting ? (x.early ? 'Early Clock Out' : 'Normal') : '',
     });
   }

@@ -32,15 +32,13 @@ export default function Login() {
           {error && <span id="email-err" className="err" role="alert">{error}</span>}
         </div>
         <button className="btn primary" type="submit" disabled={!email.trim()}>Masuk</button>
-        <div className="stack" style={{ gap: 8 }}>
-          <span className="hint">Prototipe portofolio: login memakai email dummy tanpa kata sandi.</span>
-          <div className="row">
-            {Object.entries(DEMO_USERS).map(([e, role]) => (
-              <button key={e} type="button" className="btn sm" onClick={() => { setEmail(e); setError(null); }}>
-                {role === 'hr' ? 'HR' : 'Admin'}: {e}
-              </button>
-            ))}
-          </div>
+        <div className="demo">
+          <span className="hint">Prototipe portofolio: login memakai email dummy tanpa kata sandi. Pilih akun demo:</span>
+          {Object.entries(DEMO_USERS).map(([e, role]) => (
+            <button key={e} type="button" className="btn sm" onClick={() => { setEmail(e); setError(null); }}>
+              <span>{e}</span><span className="muted">{role === 'hr' ? 'HR' : 'Admin'}</span>
+            </button>
+          ))}
         </div>
       </form>
     </div>

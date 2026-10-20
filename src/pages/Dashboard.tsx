@@ -3,7 +3,7 @@ import { BarChart3, Printer, Trash2, Upload } from 'lucide-react';
 import { useApp } from '../state';
 import { MAX_FILES, addResultFiles, monthly, ruleWarnings, trend, type ResultFile } from '../lib/dashboard';
 import { Alert, Empty, pct, period, periodShort } from '../components/ui';
-import { HBars, Histogram, LineChart } from '../components/charts';
+import { Histogram, LineChart, Meter } from '../components/charts';
 
 /** Threshold from the file's own rule snapshot (e.g. "20 %"), used to tint histogram bars. */
 const thresholdBin = (f: ResultFile, label: string) => {
@@ -18,15 +18,37 @@ function Monthly({ file }: { file: ResultFile }) {
   const maxDept = Math.max(0.25, ...m.byDept.map((d) => Math.max(d.complete ?? 0, d.late ?? 0)));
   return (
     <div className="stack" style={{ gap: 16 }}>
-      <div className="grid-4">
+      <div className="metrics">
         {[['Karyawan', String(m.n), `${m.office.toLocaleString('id-ID')} hari kantor`],
           ['Rata-rata % Complete', pct(m.avgComplete), m.min && m.max ? `terendah ${pct(m.min.v)} · tertinggi ${pct(m.max.v)} (ID ${m.max.id})` : '–'],
           ['Rata-rata % Keterlambatan', pct(m.avgLate), `periode ${periodShort(file.period)}`],
           ['Perlu Evaluasi', String(m.evaluate), `${m.n ? pct(m.evaluate / m.n, 0) : '–'} karyawan`],
-          ['Late di atas ambang', String(m.lateOver), `${m.n ? pct(m.lateOver / m.n, 0) : '–'} karyawan`]].map(([k, v, s], i) => (
-          <div key={k} className="card stat" style={{ '--i': i } as React.CSSProperties}><span className="k">{k}</span><span className="v">{v}</span><span className="s">{s}</span></div>
+          ['Late di atas ambang', String(m.lateOver), `${m.n ? pct(m.lateOver / m.n, 0) : '–'} karyawan`]].map(([k, v, s]) => (
+          <div key={k} className="stat"><span className="k">{k}</span><span className="v">{v}</span><span className="s">{s}</span></div>
         ))}
       </div>
+      {m.wfo ? (
+        <section className="card" aria-labelledby="h-wfo">
+          <div className="card-head"><h2 id="h-wfo">Kepatuhan WFO</h2><span className="muted">Σ hari terkredit ÷ Σ hari wajib · sama dengan sheet WFO Compliance</span></div>
+          <div className="card-pad stack">
+            <div className="metrics">
+              {[['Kepatuhan WFO', pct(m.wfo.rate), `${m.wfo.credited.toLocaleString('id-ID')} terkredit ÷ ${m.wfo.required.toLocaleString('id-ID')} wajib`],
+                ['Hadir fisik', String(m.wfo.physical), `dari ${m.wfo.employees} karyawan · ${m.wfo.wfhEmployees} punya hari WFH`],
+                ['Patuh / Tidak patuh / Review', `${m.wfo.patuh} / ${m.wfo.tidakPatuh} / ${m.wfo.review}`, `${m.wfo.tanpaKewajiban} tanpa kewajiban WFO`],
+                ['Hari terlambat / pulang awal', `${m.wfo.late} / ${m.wfo.early}`, `${m.wfo.missing} hari event tap hilang`],
+                ['Hari perlu review HR', String(m.wfo.reviewDays), `dari ${m.wfo.days.toLocaleString('id-ID')} hari dievaluasi`]].map(([k, v, s]) => (
+                <div key={k} className="stat"><span className="k">{k}</span><span className="v">{v}</span><span className="s">{s}</span></div>
+              ))}
+            </div>
+            <div className="table-wrap"><table className="dense">
+              <thead><tr><th>Departemen</th><th className="r">Karyawan</th><th className="r">WFO wajib</th><th className="r">Terkredit</th><th className="r">Kepatuhan</th><th className="r">Perlu review</th></tr></thead>
+              <tbody>{m.wfo.byDept.map((d) => <tr key={d.dept}><td>{d.dept}</td><td className="r num">{d.n}</td><td className="r num">{d.required}</td><td className="r num">{d.credited}</td><td className="r num"><b>{pct(d.rate)}</b></td><td className="r num">{d.review}</td></tr>)}</tbody>
+            </table></div>
+          </div>
+        </section>
+      ) : (
+        <Alert kind="info" title="Evaluasi WFO tidak tersedia untuk file ini">File dibuat dengan skema lama (tanpa sheet Daily Evaluation dan WFO Compliance). Proses ulang data sumber untuk mendapatkannya.</Alert>
+      )}
       <div className="grid-2">
         <section className="card" aria-labelledby="h-dist">
           <div className="card-head"><h2 id="h-dist">Distribusi % Complete</h2></div>
@@ -37,16 +59,20 @@ function Monthly({ file }: { file: ResultFile }) {
           <div className="card-pad"><Histogram bins={m.binsLate} warnFrom={thresholdBin(file, 'Ambang keterlambatan')} /></div>
         </section>
       </div>
-      <div className="grid-2">
-        <section className="card" aria-labelledby="h-dept">
-          <div className="card-head"><h2 id="h-dept">% Complete per departemen</h2></div>
-          <div className="card-pad"><HBars max={maxDept} items={m.byDept.map((d) => ({ label: d.dept, value: d.complete, n: d.n }))} /></div>
-        </section>
-        <section className="card" aria-labelledby="h-dept2">
-          <div className="card-head"><h2 id="h-dept2">% Keterlambatan per departemen</h2></div>
-          <div className="card-pad"><HBars max={maxDept} items={m.byDept.map((d) => ({ label: d.dept, value: d.late, n: d.n }))} /></div>
-        </section>
-      </div>
+      <section className="card" aria-labelledby="h-dept">
+        <div className="card-head"><h2 id="h-dept">Per departemen</h2><span className="muted">Rata-rata per karyawan · skala bar sama untuk semua baris</span></div>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Departemen</th><th className="r">Karyawan</th><th>% Complete</th><th>% Keterlambatan</th></tr></thead>
+          <tbody>{m.byDept.map((d) => (
+            <tr key={d.dept}>
+              <td title={d.dept}>{d.dept}</td>
+              <td className="r num">{d.n}</td>
+              <td><Meter value={d.complete} max={maxDept} label={`${d.dept} % Complete`} /></td>
+              <td><Meter value={d.late} max={maxDept} tone="late" label={`${d.dept} % Keterlambatan`} /></td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+      </section>
       <section className="card" aria-labelledby="h-exc">
         <div className="card-head"><h2 id="h-exc">Ringkasan exception</h2><span className="muted">{total} flag diputuskan · {m.byAction.map((a) => `${a.action} ${a.n}`).join(' · ') || 'tidak ada'}</span></div>
         {total === 0 ? <Empty icon={<BarChart3 />} title="Tidak ada exception pada periode ini" /> : (
@@ -84,13 +110,13 @@ export default function Dashboard() {
       <div className="page-head">
         <div>
           <h1>Dashboard</h1>
-          <p>Unggah file .xlsx hasil Tenflow (sheet Final Data). Satu file menampilkan dashboard bulanan, dua file atau lebih menampilkan tren. Data tidak disimpan di server.</p>
+          <p>Satu file hasil Tenflow menampilkan dashboard bulanan, dua file atau lebih menampilkan tren. Data tidak disimpan di server.</p>
         </div>
         <button className="btn no-print" onClick={() => window.print()} disabled={!dash.length}><Printer />Cetak / simpan PDF</button>
       </div>
 
       <div className="no-print stack">
-        <label className="drop" data-over={over} onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={drop}>
+        <label className="drop" aria-busy={busy} data-over={over} onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={drop}>
           <Upload aria-hidden="true" />
           <b>{busy ? 'Membaca file…' : 'Unggah file hasil'}</b>
           <span className="hint">Klik atau seret satu atau beberapa file .xlsx (maks. {MAX_FILES}; satu file per bulan)</span>
@@ -144,10 +170,16 @@ export default function Dashboard() {
               <div className="card-pad"><LineChart points={tr.points} get={(p) => p.late} label="Tren rata-rata % Keterlambatan" /></div>
             </section>
           </div>
+          {tr.points.some((p) => p.wfo != null) && (
+            <section className="card" aria-labelledby="h-trend3">
+              <div className="card-head"><h2 id="h-trend3">Tren kepatuhan WFO</h2><span className="muted">Bulan dari file lama (tanpa evaluasi WFO) tampil sebagai gap</span></div>
+              <div className="card-pad"><LineChart points={tr.points} get={(p) => p.wfo} label="Tren kepatuhan WFO" /></div>
+            </section>
+          )}
           {tr.points.some((p) => p.complete == null) && <p className="hint">Garis putus-putus menandai bulan tanpa file (tidak diinterpolasi).</p>}
           <section className="card" aria-labelledby="h-tbl">
             <div className="card-head"><h2 id="h-tbl">Tabel tren</h2><span className="muted">{period(tr.points[0].period)} – {period(tr.points[tr.points.length - 1].period)}</span></div>
-            <div className="table-wrap"><table>
+            <div className="table-wrap"><table className="dense">
               <thead><tr><th>Periode</th><th className="r">Karyawan</th><th className="r">% Complete</th><th className="r">% Keterlambatan</th>{tr.depts.map((d) => <th key={d.dept} className="r">{d.dept}</th>)}</tr></thead>
               <tbody>{tr.points.map((p, i) => (
                 <tr key={p.period}><td>{period(p.period)}</td><td className="r num">{p.n ?? '–'}</td>
@@ -156,7 +188,7 @@ export default function Dashboard() {
               ))}</tbody>
             </table></div>
           </section>
-          <div className="page-head" style={{ marginTop: 8 }}>
+          <div className="page-head">
             <h2>Detail periode</h2>
             <select className="select no-print" style={{ width: 'auto' }} aria-label="Pilih periode" value={shown.period} onChange={(e) => setDetail(e.target.value)}>
               {dash.map((f) => <option key={f.period} value={f.period}>{period(f.period)}</option>)}

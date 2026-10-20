@@ -22,7 +22,7 @@ function readSession(): Session | null {
 }
 
 export interface ProcState {
-  step: 'upload' | 'review' | 'preview' | 'done';
+  step: 'upload' | 'review' | 'evaluate' | 'preview' | 'done';
   fp: File | null;
   hr: File | null;
   ing: Ingested | null;

@@ -10,7 +10,16 @@ const PAGE = 25;
 type Status = 'all' | 'open' | 'done';
 type Sort = 'severity' | 'date' | 'category' | 'employee';
 
-const sevBadge = (s: Severity) => <span className={`badge ${s === 'kritis' ? 'bad' : 'info'}`}>{s === 'kritis' ? 'Kritis' : 'Informatif'}</span>;
+/** Quick answers for the most common reasons behind a single tap; they only prefill the form, the reason stays editable and mandatory. */
+const TEMPLATES: { id: string; label: string; action: Action; outcome?: Outcome; reason: string; dayOnly: boolean }[] = [
+  { id: 'meeting', label: 'Meeting / dinas di luar kantor', action: 'override', outcome: 'compliant', reason: 'Meeting/dinas di luar kantor sehingga hanya satu tap tercatat. ', dayOnly: true },
+  { id: 'half', label: 'Cuti setengah hari (1 ALR = 2 setengah hari)', action: 'override', outcome: 'compliant', reason: 'Cuti setengah hari (pagi/sore) yang tidak tercatat di Talenta. ', dayOnly: true },
+  { id: 'sick', label: 'Sakit setengah hari', action: 'override', outcome: 'compliant', reason: 'Sakit di tengah hari kerja, pulang lebih awal. ', dayOnly: true },
+  { id: 'forgot', label: 'Lupa tap, dikonfirmasi atasan', action: 'override', outcome: 'compliant', reason: 'Lupa tap, dikonfirmasi atasan. ', dayOnly: true },
+  { id: 'invalid', label: 'Data tidak valid, keluarkan dari perhitungan', action: 'exclude', reason: 'Data tidak valid, dikeluarkan dari perhitungan. ', dayOnly: false },
+];
+
+const sevBadge =(s: Severity) => <span className={`badge ${s === 'kritis' ? 'bad' : 'info'}`}>{s === 'kritis' ? 'Kritis' : 'Informatif'}</span>;
 
 function DecisionDialog({ flags, user, onSave, onClose }: { flags: Flag[]; user: string; onSave: (d: Record<string, import('../lib/types').Decision>) => void; onClose: () => void }) {
   const [action, setAction] = useState<Action>('accept');
@@ -20,6 +29,14 @@ function DecisionDialog({ flags, user, onSave, onClose }: { flags: Flag[]; user:
   const sameKind = new Set(flags.map((f) => f.category)).size <= 1;
   const canOverride = flags.every((f) => f.scope === 'day');
   const reasonOk = reason.trim().length >= 3;
+  const [tpl, setTpl] = useState('');
+  const applyTemplate = (id: string) => {
+    setTpl(id);
+    const t = TEMPLATES.find((x) => x.id === id);
+    if (!t) return;
+    setAction(t.action); setReason(t.reason);
+    if (t.outcome) setOutcome(t.outcome);
+  };
   const submit = () => {
     setTouched(true);
     if (!reasonOk || !sameKind) return;
@@ -39,6 +56,14 @@ function DecisionDialog({ flags, user, onSave, onClose }: { flags: Flag[]; user:
         {flags.length === 1 && <p className="muted" style={{ marginTop: 4 }}>{flags[0].reason}</p>}
       </div>
       {!sameKind && <Alert kind="error">Aksi massal hanya untuk flag sejenis. Pilih flag dari satu kategori yang sama.</Alert>}
+      <div className="field">
+        <label htmlFor="tpl">Template alasan (opsional)</label>
+        <select id="tpl" className="select" value={tpl} onChange={(e) => applyTemplate(e.target.value)}>
+          <option value="">Tanpa template</option>
+          {TEMPLATES.filter((t) => canOverride || !t.dayOnly).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+        <span className="hint">Mengisi keputusan dan alasan; lengkapi alasan (siapa yang mengonfirmasi, jam, dll.) sebelum menyimpan.</span>
+      </div>
       <div className="stack" style={{ gap: 8 }} role="radiogroup" aria-label="Keputusan">
         {opt('accept', 'Accept', 'Terima hasil sementara sistem apa adanya.')}
         {opt('override', 'Override', canOverride ? 'Tetapkan hasil hari secara manual.' : 'Hanya untuk flag per hari (bukan per karyawan).', !canOverride)}
@@ -102,8 +127,8 @@ export default function ReviewStep({ res, decisions, user, onDecide, onNext }: {
   const openDlg = (flags: Flag[]) => { setDlg({ flags, key: (dlg?.key ?? 0) + 1 }); setDlgOpen(true); };
 
   if (!res.flags.length) return (
-    <div className="card"><Empty icon={<CheckCircle2 />} title="Tidak ada flag">Semua data dapat dihitung secara pasti. Lanjutkan ke pratinjau.</Empty>
-      <div className="pager"><span /><button className="btn primary" onClick={onNext}>Lanjut ke pratinjau</button></div></div>
+    <div className="card"><Empty icon={<CheckCircle2 />} title="Tidak ada flag">Semua data dapat dihitung secara pasti. Lanjutkan ke evaluasi.</Empty>
+      <div className="pager"><span /><button className="btn primary" onClick={onNext}>Lanjut ke evaluasi</button></div></div>
   );
 
   return (
@@ -136,7 +161,7 @@ export default function ReviewStep({ res, decisions, user, onDecide, onNext }: {
       )}
       {rows.length === 0 ? (
         <Empty icon={<CheckCircle2 />} title={open.length === 0 ? 'Semua flag sudah diputuskan' : 'Tidak ada flag yang cocok'}>
-          {open.length === 0 ? 'Lanjutkan ke pratinjau dan approval.' : 'Ubah filter untuk melihat flag lain.'}
+          {open.length === 0 ? 'Lanjutkan ke evaluasi dan approval.' : 'Ubah filter untuk melihat flag lain.'}
         </Empty>
       ) : (
         <div className="table-wrap">
@@ -152,11 +177,11 @@ export default function ReviewStep({ res, decisions, user, onDecide, onNext }: {
                   <tr key={f.id}>
                     <td><input type="checkbox" aria-label={`Pilih flag ${f.empId} ${f.date}`} checked={sel.has(f.id)} onChange={() => toggle(f.id)} /></td>
                     <td>{sevBadge(f.severity)}</td>
-                    <td>{CATEGORY_LABEL[f.category]}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{CATEGORY_LABEL[f.category]}</td>
                     <td><b className="num">{f.empId}</b><div className="muted">{f.name || '—'} · {f.dept || 'tanpa departemen'}</div></td>
                     <td className="num" style={{ whiteSpace: 'nowrap' }}>{f.date ? dmy(f.date) : 'Karyawan'}</td>
                     <td className="reason">{f.reason}</td>
-                    <td>{d ? <span className="badge ok" title={d.reason}>{ACTION_LABEL[d.action]}{d.outcome ? `: ${OUTCOME_LABEL[d.outcome]}` : ''}</span> : <span className="badge warn">Belum ditentukan</span>}</td>
+                    <td>{d ? <span className="badge ok" title={d.reason} style={{ whiteSpace: 'normal' }}>{ACTION_LABEL[d.action]}{d.outcome ? `: ${OUTCOME_LABEL[d.outcome]}` : ''}</span> : <span className="badge warn">Belum ditentukan</span>}</td>
                     <td><button className="btn sm" onClick={() => openDlg([f])}>{d ? 'Ubah' : 'Putuskan'}</button></td>
                   </tr>
                 );
@@ -171,7 +196,7 @@ export default function ReviewStep({ res, decisions, user, onDecide, onNext }: {
           <button className="btn sm" onClick={() => setPage(cur - 1)} disabled={cur === 0} aria-label="Halaman sebelumnya"><ChevronLeft /></button>
           <span className="num">{cur + 1} / {pages}</span>
           <button className="btn sm" onClick={() => setPage(cur + 1)} disabled={cur >= pages - 1} aria-label="Halaman berikutnya"><ChevronRight /></button>
-          <button className="btn primary" onClick={onNext}>Lanjut ke pratinjau{open.length ? ` (${pct(1 - open.length / res.flags.length, 0)} selesai)` : ''}</button>
+          <button className="btn primary" onClick={onNext}>Lanjut ke evaluasi{open.length ? ` (${pct(1 - open.length / res.flags.length, 0)} selesai)` : ''}</button>
         </div>
       </div>
       <Dialog open={dlgOpen} onClose={() => setDlgOpen(false)} title="Putuskan flag">

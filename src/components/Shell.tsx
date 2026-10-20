@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Outlet } from 'react-router-dom';
 import { FileSpreadsheet, LayoutDashboard, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun } from 'lucide-react';
 import { useApp, SESSION_MS, WARN_MS } from '../state';
+import { canAccess } from '../access';
 import { Dialog, Logo } from './ui';
 
 const mmss = (ms: number) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
@@ -31,7 +32,7 @@ function SessionGuard() {
           <div className="dlg-foot"><button className="btn primary" onClick={() => setDismissed(true)} autoFocus>Mengerti</button></div>
         </div>
       </Dialog>
-      {warn && dismissed && <div className="badge warn no-print" role="timer" style={{ position: 'fixed', right: 16, bottom: 16, padding: '6px 12px', boxShadow: 'var(--shadow)' }}>Sesi berakhir dalam {mmss(left)}</div>}
+      {warn && dismissed && <div className="badge warn no-print session-pill" role="timer">Sesi berakhir dalam {mmss(left)}</div>}
     </>
   );
 }
@@ -67,7 +68,7 @@ export default function Shell() {
         <nav className="nav" id="main-nav" aria-label="Navigasi utama">
           {link('/proses', FileSpreadsheet, 'Proses Attendance')}
           {link('/dashboard', LayoutDashboard, 'Dashboard')}
-          {session.role === 'admin' && link('/config', Settings2, 'Settings & Config')}
+          {canAccess(session.role, '/config') && link('/config', Settings2, 'Settings & Config')}
         </nav>
         <div className="side-foot">
           <div className="who"><b title={session.email}>{session.email}</b><span className="muted">{session.role === 'hr' ? 'HR (User)' : 'Admin'}</span></div>

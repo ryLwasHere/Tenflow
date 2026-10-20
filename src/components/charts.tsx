@@ -10,11 +10,14 @@ export function Histogram({ bins, warnFrom, unit = 'karyawan' }: { bins: number[
     <div className="chart">
       <div className="hist" role="img" aria-label={`Distribusi per rentang 5%: ${bins.map((b, i) => `${BIN_LABELS[i]}%: ${b} ${unit}`).join(', ')}`}>
         {bins.map((b, i) => (
-          <div key={i} className="col"><div className={`bar${warnFrom != null && i >= warnFrom ? ' warn' : ''}`} style={{ height: `${(b / max) * 100}%`, opacity: b ? 1 : 0.15 }}>{b > 0 && <span className="cnt num">{b}</span>}</div></div>
+          <div key={i} className="col" title={`${BIN_LABELS[i]}%: ${b} ${unit}`}><div className={`bar${warnFrom != null && i >= warnFrom ? ' warn' : ''}`} style={{ height: `${(b / max) * 100}%`, opacity: b ? 1 : 0.15 }}>{b > 0 && <span className="cnt num">{b}</span>}</div></div>
         ))}
       </div>
       <div className="hist-x" aria-hidden="true">{BIN_LABELS.map((l) => <span key={l}>{l}</span>)}</div>
-      <p className="hint" style={{ textAlign: 'center', marginTop: 4 }}>Rentang (%) · jumlah {unit}{warnFrom != null ? ' · warna kuning = di atas ambang' : ''}</p>
+      <div className="chart-cap">
+        <span className="hint">Rentang (%) · jumlah {unit}</span>
+        {warnFrom != null && <span className="key"><i />Di atas ambang</span>}
+      </div>
       <details className="alt"><summary>Tampilkan sebagai tabel</summary>
         <table><thead><tr><th>Rentang</th><th className="r">{unit}</th></tr></thead><tbody>{bins.map((b, i) => <tr key={i}><td>{BIN_LABELS[i]}%</td><td className="r num">{b}</td></tr>)}</tbody></table>
       </details>
@@ -22,16 +25,12 @@ export function Histogram({ bins, warnFrom, unit = 'karyawan' }: { bins: number[
   );
 }
 
-export function HBars({ items, max }: { items: { label: string; value: number | null; n: number }[]; max: number }) {
+/** Inline value bar for table cells; `max` is shared across rows so lengths stay comparable. */
+export function Meter({ value, max, tone = 'brand', label }: { value: number | null; max: number; tone?: 'brand' | 'late'; label: string }) {
   return (
-    <div className="chart">
-      {items.map((it) => (
-        <div className="hbar" key={it.label}>
-          <span title={it.label} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label} <span className="muted">({it.n})</span></span>
-          <div className="track" role="img" aria-label={`${it.label}: ${pct(it.value)}`}><div className="fill" style={{ width: `${Math.min(1, (it.value ?? 0) / max) * 100}%` }} /></div>
-          <b className="num" style={{ textAlign: 'right' }}>{pct(it.value)}</b>
-        </div>
-      ))}
+    <div className={tone === 'late' ? 'meter late' : 'meter'}>
+      <div className="track" role="img" aria-label={`${label}: ${pct(value)}`}><div className="fill" style={{ width: `${Math.min(1, (value ?? 0) / max) * 100}%` }} /></div>
+      <b className="num">{pct(value)}</b>
     </div>
   );
 }

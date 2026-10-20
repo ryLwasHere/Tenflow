@@ -8,12 +8,13 @@ import {
 import { hhmm, parseHm } from '../lib/format';
 import { Alert, Dialog } from '../components/ui';
 
-type Tab = 'params' | 'schedules' | 'map' | 'codes' | 'log';
+type Tab = 'params' | 'schedules' | 'map' | 'codes' | 'flex' | 'log';
 type Editing =
   | { kind: 'schedule'; item: ScheduleRule | null }
   | { kind: 'map'; item: ShiftMap | null }
   | { kind: 'code'; item: AttendanceRule | null }
-  | { kind: 'delete'; what: 'schedule' | 'map' | 'code'; id: string; label: string; note?: string };
+  | { kind: 'dept'; item: string | null }
+  | { kind: 'delete'; what: 'schedule' | 'map' | 'code' | 'dept'; id: string; label: string; note?: string };
 
 const dt = (iso: string) => new Date(iso).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' });
 const nid = () => Math.random().toString(36).slice(2, 9);
@@ -28,6 +29,8 @@ function ParamsForm({ params, readOnly, onSave }: { params: Params; readOnly: bo
     else if (m.max && v > m.max) errs[m.key] = `Maksimum ${m.max}`;
   }
   if (!errs.minWorkMin && p.minWorkMin >= p.maxWorkMin) errs.minWorkMin = 'Harus lebih kecil dari durasi maksimum';
+  for (const m of PARAM_META) if (m.unit === '0/1' && !errs[m.key] && p[m.key] !== 0 && p[m.key] !== 1) errs[m.key] = 'Harus 0 atau 1';
+  if (!errs.lunchStartMin && !errs.lunchEndMin && p.lunchStartMin >= p.lunchEndMin) errs.lunchStartMin = 'Harus lebih awal dari selesai istirahat';
   const dirty = JSON.stringify(p) !== JSON.stringify(params);
   return (
     <form className="card-pad stack" onSubmit={(e) => { e.preventDefault(); if (!Object.keys(errs).length) onSave(p); }} noValidate>
@@ -120,6 +123,23 @@ function SimpleDialog({ kind, item, rs, onSave, onClose }: { kind: 'map' | 'code
   );
 }
 
+function DeptDialog({ item, rs, onSave, onClose }: { item: string | null; rs: RuleSet; onSave: (name: string) => void; onClose: () => void }) {
+  const [name, setName] = useState(item ?? '');
+  const [touched, setTouched] = useState(false);
+  const n = name.trim();
+  const err = !n ? 'Wajib diisi' : (rs.flexDepts ?? []).some((d) => d !== item && same(d, n)) ? 'Sudah ada' : '';
+  return (
+    <form className="dlg" onSubmit={(e) => { e.preventDefault(); setTouched(true); if (!err) onSave(n); }} noValidate>
+      <h2>{item ? 'Ubah' : 'Tambah'} divisi fleksibel</h2>
+      <div className="field"><label htmlFor="dn">Nama divisi (kolom Organization di HRIS)</label>
+        <input id="dn" className="input" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={touched && !!err} autoFocus />
+        {touched && err ? <span className="err">{err}</span> : <span className="hint">Awalan perusahaan dalam kurung dan huruf besar/kecil diabaikan: "COM" cocok dengan "[AB] COM".</span>}</div>
+      <p className="hint">Menyimpan membuat versi rule baru. Tidak berlaku surut.</p>
+      <div className="dlg-foot"><button type="button" className="btn" onClick={onClose}>Batal</button><button className="btn primary" type="submit">Simpan sebagai versi baru</button></div>
+    </form>
+  );
+}
+
 export default function Config() {
   const { session } = useApp();
   const [store, setStore] = useState<RuleStore>(loadStore);
@@ -167,12 +187,20 @@ export default function Config() {
     return { action: 'create', target: `Kode ${code}`, detail: TREATMENT_LABEL[treatment as Treatment] };
   }, 'Rule kode kehadiran disimpan.');
 
+  const saveDept = (name: string) => apply((d) => {
+    const old = edit?.kind === 'dept' ? edit.item : null;
+    const list = d.flexDepts ?? [];
+    d.flexDepts = old ? list.map((x) => (x === old ? name : x)) : [...list, name];
+    return { action: old ? 'update' : 'create', target: `Divisi fleksibel ${name}`, detail: old ? `${old} ⇒ ${name}` : 'Tap sebelah dan durasi tidak wajar dianggap hadir' };
+  }, 'Divisi fleksibel disimpan.');
+
   const del = () => {
     if (edit?.kind !== 'delete') return;
     const { what, id, label } = edit;
     apply((d) => {
       if (what === 'schedule') d.schedules = d.schedules.filter((s) => s.id !== id);
       else if (what === 'map') d.shiftMap = d.shiftMap.filter((m) => m.id !== id);
+      else if (what === 'dept') d.flexDepts = (d.flexDepts ?? []).filter((x) => x !== id);
       else d.attendance = d.attendance.filter((a) => a.id !== id);
       return { action: 'delete', target: label, detail: 'Dihapus permanen' };
     }, 'Rule dihapus.');
@@ -183,7 +211,7 @@ export default function Config() {
     return { action: 'update', target: 'Parameter', detail: ch.join('; ') };
   }, 'Parameter disimpan.');
 
-  const tabs: [Tab, string][] = [['params', 'Parameter'], ['schedules', `Work Schedule (${rs.schedules.length})`], ['map', `Pemetaan shift (${rs.shiftMap.length})`], ['codes', `Kode kehadiran (${rs.attendance.length})`], ['log', `Log perubahan (${store.log.length})`]];
+  const tabs: [Tab, string][] = [['params', 'Parameter'], ['schedules', `Work Schedule (${rs.schedules.length})`], ['map', `Pemetaan shift (${rs.shiftMap.length})`], ['codes', `Kode kehadiran (${rs.attendance.length})`], ['flex', `Divisi fleksibel (${(rs.flexDepts ?? []).length})`], ['log', `Log perubahan (${store.log.length})`]];
   const actions = (e: Editing, label: string, note?: string) => !readOnly && (
     <div className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
       <button className="btn sm" aria-label={`Ubah ${label}`} onClick={() => show(e)}><Pencil />Ubah</button>
@@ -216,7 +244,7 @@ export default function Config() {
         {tab === 'params' && <ParamsForm key={rs.version} params={rs.params} readOnly={readOnly} onSave={saveParams} />}
         {tab === 'schedules' && (
           <>
-            {addBar('Tambah Work Schedule', { kind: 'schedule', item: null }, 'Ambang ini dipakai untuk menghitung Late Arrival dan Early Clock Out pada Final Data.')}
+            {addBar('Tambah Work Schedule', { kind: 'schedule', item: null }, 'Ambang ini hanya dipakai bila "Dasar jadwal" = 0 (rumus sheet perusahaan). Dengan "Dasar jadwal" = 1, jam diambil dari shift HRIS hari itu dan Work Schedule menentukan kategori saja.')}
             <div className="table-wrap"><table>
               <thead><tr><th>Work Schedule</th><th>Aturan</th><th /></tr></thead>
               <tbody>{rs.schedules.map((s) => <tr key={s.id}><td><b>{s.name}</b></td><td className="reason">{scheduleText(s)}</td><td>{actions({ kind: 'schedule', item: s }, `Work Schedule ${s.name}`, `${rs.shiftMap.filter((m) => same(m.schedule, s.name)).length} pemetaan shift memakai jadwal ini dan akan di-flag "tidak ada rule".`)}</td></tr>)}</tbody>
@@ -234,10 +262,23 @@ export default function Config() {
         )}
         {tab === 'codes' && (
           <>
-            {addBar('Tambah kode', { kind: 'code', item: null }, 'Kode cuti/izin/sakit yang bertemu tap di-flag sebagai konflik antar sumber. Kode tanpa rule di-flag saat proses.')}
+            {addBar('Tambah kode', { kind: 'code', item: null }, 'Kode cuti/izin/sakit atau WFH yang bertemu tap di-flag sebagai konflik antar sumber (cuti sebagian hari yang disetujui dan konsisten dengan tap tidak di-flag). Kode tanpa rule di-flag saat proses.')}
             <div className="table-wrap"><table>
               <thead><tr><th>Attendance Code</th><th>Perlakuan</th><th /></tr></thead>
               <tbody>{rs.attendance.map((a) => <tr key={a.id}><td><b>{a.code}</b></td><td>{TREATMENT_LABEL[a.treatment]}</td><td>{actions({ kind: 'code', item: a }, `kode ${a.code}`)}</td></tr>)}</tbody>
+            </table></div>
+          </>
+        )}
+        {tab === 'flex' && (
+          <>
+            {addBar('Tambah divisi', { kind: 'dept', item: null }, 'Karyawan divisi ini sering keluar-masuk kantor (meeting). Hari kerja dengan tap hanya sebelah (masuk saja / pulang saja) dianggap hadir tanpa flag, dan durasi tap yang tidak wajar tidak di-flag. Terlambat/pulang awal tetap dinilai bila kedua tap ada. Hari bertanda cuti, WFH atau dinas tetap mengikuti rule kodenya.')}
+            <div className="table-wrap"><table>
+              <thead><tr><th>Divisi</th><th /></tr></thead>
+              <tbody>{(rs.flexDepts ?? []).map((n) => <tr key={n}><td><b>{n}</b></td><td>{!readOnly && (
+                <div className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
+                  <button className="btn sm" aria-label={`Ubah divisi ${n}`} onClick={() => show({ kind: 'dept', item: n })}><Pencil />Ubah</button>
+                  <button className="btn sm ghost" aria-label={`Hapus divisi ${n}`} onClick={() => show({ kind: 'delete', what: 'dept', id: n, label: `divisi ${n}` })}><Trash2 /></button>
+                </div>)}</td></tr>)}</tbody>
             </table></div>
           </>
         )}
@@ -256,6 +297,7 @@ export default function Config() {
       <Dialog open={open} onClose={() => setOpen(false)} title="Rule">
         {edit?.kind === 'schedule' && <ScheduleDialog key={`s-${edit.item?.id ?? 'new'}-${store.versions.length}`} item={edit.item} rs={rs} onSave={saveSchedule} onClose={() => setOpen(false)} />}
         {(edit?.kind === 'map' || edit?.kind === 'code') && <SimpleDialog key={`${edit.kind}-${edit.item?.id ?? 'new'}-${store.versions.length}`} kind={edit.kind} item={edit.item} rs={rs} onSave={edit.kind === 'map' ? saveMap : saveCode} onClose={() => setOpen(false)} />}
+        {edit?.kind === 'dept' && <DeptDialog key={`d-${edit.item ?? 'new'}-${store.versions.length}`} item={edit.item} rs={rs} onSave={saveDept} onClose={() => setOpen(false)} />}
         {edit?.kind === 'delete' && (
           <div className="dlg">
             <h2>Hapus {edit.label}?</h2>

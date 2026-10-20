@@ -1,6 +1,7 @@
 import { readSheets } from './xlsx';
-import { AUDIT_COLS, CHECKSUM_KEY, EXCEPTION_COLS, FINAL_COLS, MASTER_COLS, META_COLS, SCHEMA, SHEET, checksumOf } from './exporter';
+import { AUDIT_COLS, CHECKSUM_KEY, DAILY_COLS, EVAL_SHEET, EXCEPTION_COLS, FINAL_COLS, LEGACY_SCHEMA, MASTER_COLS, META_COLS, SCHEMA, SHEET, WFO_COLS, checksumOf } from './exporter';
 import { diffSnapshots } from './rules';
+import { WFO_STATUS_LABEL } from './compliance';
 
 export const MAX_FILES = 12; // FR-30
 
@@ -10,8 +11,12 @@ export interface ResultEmployee {
   lateRate: number | null; // "% Keterlambatan Clock In"
   remark: string; lateRemark: string; office: number;
 }
+/** One row of the WFO Compliance sheet; null on the ResultFile when the file predates it (schema /2). */
+export interface ResultWfo { id: string; dept: string; scheduled: number; excused: number; wfh: number; attended: number; unresolved: number; required: number; credited: number; status: string }
+export interface ResultDaily { mode: string; late: string; early: string; missing: string; review: boolean }
 export interface ResultFile {
   name: string; period: string; ruleVersion: number; createdAt: string; intact: boolean;
+  wfo: ResultWfo[] | null; daily: ResultDaily[] | null;
   employees: ResultEmployee[];
   exceptions: { category: string; severity: string; action: string }[];
   audit: [string, string, string][];
@@ -26,16 +31,27 @@ export async function parseResult(buf: ArrayBuffer, name: string): Promise<Resul
   for (const s of Object.values(SHEET)) if (!sheets[s]) throw new Error(`Bukan file hasil Tenflow: sheet "${s}" tidak ditemukan.`);
   const [fin, master, exc, audit, meta] = [sheets[SHEET.final], sheets[SHEET.master], sheets[SHEET.exception], sheets[SHEET.audit], sheets[SHEET.meta]] as (string | number)[][][];
   const m = new Map(meta.slice(1).map((r) => [String(r[0]), r[1]]));
-  if (m.get('Schema Version') !== SCHEMA) throw new Error(`Versi skema tidak didukung (${m.get('Schema Version') ?? 'tidak ada'}; diharapkan ${SCHEMA}).`);
+  const schema = m.get('Schema Version');
+  if (schema !== SCHEMA && schema !== LEGACY_SCHEMA) throw new Error(`Versi skema tidak didukung (${schema ?? 'tidak ada'}; diharapkan ${SCHEMA}).`);
   for (const [rows, cols, label] of [[fin, FINAL_COLS, SHEET.final], [master, MASTER_COLS, SHEET.master], [exc, EXCEPTION_COLS, SHEET.exception], [audit, AUDIT_COLS, SHEET.audit], [meta, META_COLS, SHEET.meta]] as const)
     if (!sameCols(rows[0], cols as string[])) throw new Error(`Struktur sheet "${label}" tidak sesuai skema.`);
+  // schema /3 must carry both evaluation sheets (they are part of the checksum); /2 files never had them
+  const daily = sheets[EVAL_SHEET.daily] as (string | number)[][] | undefined, wfo = sheets[EVAL_SHEET.wfo] as (string | number)[][] | undefined;
+  if (schema === SCHEMA) {
+    for (const [rows, cols, label] of [[daily, DAILY_COLS, EVAL_SHEET.daily], [wfo, WFO_COLS, EVAL_SHEET.wfo]] as const)
+      if (!rows) throw new Error(`Bukan file hasil Tenflow yang utuh: sheet "${label}" tidak ditemukan.`);
+      else if (!sameCols(rows[0], cols as string[])) throw new Error(`Struktur sheet "${label}" tidak sesuai skema.`);
+  }
   const period = String(m.get('Periode') ?? '');
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw new Error(`Periode pada Metadata tidak valid: "${period}".`);
-  const intact = (await checksumOf(fin, master, exc, audit, meta)) === m.get(CHECKSUM_KEY);
+  const intact = (await checksumOf(fin, master, exc, audit, meta, schema === SCHEMA ? [daily!, wfo!] : [])) === m.get(CHECKSUM_KEY);
   const num = (v: unknown) => (typeof v === 'number' ? v : null);
   const z = (v: unknown) => (typeof v === 'number' ? v : 0); // formula cells whose cached result is 0 read back empty
+  const statusByLabel = new Map(Object.entries(WFO_STATUS_LABEL).map(([k, v]) => [v, k]));
   return {
     name, period, intact, ruleVersion: Number(m.get('Versi Rule')), createdAt: String(m.get('Dibuat') ?? ''),
+    wfo: schema === SCHEMA ? wfo!.slice(1).map((r) => ({ id: String(r[0]), dept: String(r[2]) || '(tanpa departemen)', scheduled: z(r[4]), excused: z(r[5]), wfh: z(r[6]), attended: z(r[7]), unresolved: z(r[8]), required: z(r[9]), credited: z(r[10]), status: statusByLabel.get(String(r[12])) ?? 'review' })) : null,
+    daily: schema === SCHEMA ? daily!.slice(1).map((r) => ({ mode: String(r[8]), late: String(r[14]), early: String(r[15]), missing: String(r[18]), review: r[19] === 'Ya' })) : null,
     employees: fin.slice(1).map((r) => ({
       id: String(r[1]), dept: String(r[3]) || '(tanpa departemen)', schedule: String(r[17]), complete: z(r[9]), lateRate: num(r[18]) ?? (z(r[5]) > 0 ? 0 : null),
       remark: String(r[10]), lateRemark: String(r[19]), office: z(r[16]),
@@ -74,6 +90,16 @@ export interface Monthly {
   byDept: { dept: string; n: number; complete: number | null; late: number | null }[];
   byCategory: { category: string; kritis: number; informatif: number }[];
   byAction: { action: string; n: number }[];
+  wfo: WfoMonthly | null;
+}
+
+/** Same definitions as compliance.summarizeWfo, recomputed from the file's own sheets so the Dashboard reconciles with the export. */
+export interface WfoMonthly {
+  employees: number; physical: number; wfhEmployees: number;
+  required: number; credited: number; rate: number | null;
+  patuh: number; tidakPatuh: number; review: number; tanpaKewajiban: number;
+  late: number; early: number; missing: number; reviewDays: number; days: number;
+  byDept: { dept: string; n: number; required: number; credited: number; rate: number | null; review: number }[];
 }
 
 export function monthly(f: ResultFile): Monthly {
@@ -92,6 +118,25 @@ export function monthly(f: ResultFile): Monthly {
     byDept: depts.map((d) => { const x = es.filter((e) => e.dept === d); return { dept: d, n: x.length, complete: mean(x.map((e) => e.complete)), late: late(x) }; }),
     byCategory: cats.map((c) => ({ category: c, kritis: f.exceptions.filter((x) => x.category === c && x.severity === 'kritis').length, informatif: f.exceptions.filter((x) => x.category === c && x.severity !== 'kritis').length })),
     byAction: acts.map((a) => ({ action: a, n: f.exceptions.filter((x) => x.action === a).length })),
+    wfo: wfoMonthly(f),
+  };
+}
+
+function wfoMonthly(f: ResultFile): WfoMonthly | null {
+  if (!f.wfo || !f.daily) return null;
+  const w = f.wfo, rate = (c: number, r: number) => (r ? c / r : null);
+  const sum = (xs: ResultWfo[], k: 'required' | 'credited') => xs.reduce((s, x) => s + x[k], 0);
+  const cnt = (s: string) => w.filter((x) => x.status === s).length;
+  return {
+    employees: w.length, physical: w.filter((x) => x.attended > 0).length, wfhEmployees: w.filter((x) => x.wfh > 0).length,
+    required: sum(w, 'required'), credited: sum(w, 'credited'), rate: rate(sum(w, 'credited'), sum(w, 'required')),
+    patuh: cnt('patuh'), tidakPatuh: cnt('tidak_patuh'), review: cnt('review'), tanpaKewajiban: cnt('tanpa_kewajiban'),
+    late: f.daily.filter((d) => d.late === 'ya').length, early: f.daily.filter((d) => d.early === 'ya').length,
+    missing: f.daily.filter((d) => d.missing).length, reviewDays: f.daily.filter((d) => d.review).length, days: f.daily.length,
+    byDept: [...new Set(w.map((x) => x.dept))].sort().map((dept) => {
+      const x = w.filter((e) => e.dept === dept);
+      return { dept, n: x.length, required: sum(x, 'required'), credited: sum(x, 'credited'), rate: rate(sum(x, 'credited'), sum(x, 'required')), review: x.filter((e) => e.status === 'review').length };
+    }),
   };
 }
 
@@ -103,13 +148,13 @@ export const monthsBetween = (a: string, b: string): string[] => {
   return out;
 };
 
-export interface TrendPoint { period: string; n: number | null; complete: number | null; late: number | null }
+export interface TrendPoint { period: string; n: number | null; complete: number | null; late: number | null; wfo: number | null }
 /** One point per calendar month between the first and last file; missing months stay null so the chart shows a gap (FR-33). */
 export function trend(files: ResultFile[]): { points: TrendPoint[]; depts: { dept: string; complete: (number | null)[] }[] } {
   const sorted = [...files].sort((a, b) => (a.period < b.period ? -1 : 1));
   const months = monthsBetween(sorted[0].period, sorted[sorted.length - 1].period);
   const by = new Map(sorted.map((f) => [f.period, f]));
-  const points = months.map((p): TrendPoint => { const f = by.get(p); if (!f) return { period: p, n: null, complete: null, late: null }; const m = monthly(f); return { period: p, n: m.n, complete: m.avgComplete, late: m.avgLate }; });
+  const points = months.map((p): TrendPoint => { const f = by.get(p); if (!f) return { period: p, n: null, complete: null, late: null, wfo: null }; const m = monthly(f); return { period: p, n: m.n, complete: m.avgComplete, late: m.avgLate, wfo: m.wfo?.rate ?? null }; });
   const depts = [...new Set(sorted.flatMap((f) => f.employees.map((e) => e.dept)))].sort();
   return { points, depts: depts.map((d) => ({ dept: d, complete: months.map((p) => { const f = by.get(p); return f ? monthly(f).byDept.find((x) => x.dept === d)?.complete ?? null : null; }) })) };
 }
