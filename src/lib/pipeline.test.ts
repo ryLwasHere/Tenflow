@@ -10,7 +10,7 @@ import { evaluateAttendance } from './compliance';
 import type { HrisRow, Tap } from './types';
 
 const rules = activeRules(defaultStore());
-const legacyRules = { ...rules, params: { ...rules.params, scheduleBasis: 0, ignoreDayOffTaps: 0, talentaFillsMissingTap: 0, inferHalfDayAlr: 0, leaveWorkedFullDay: 0, forgotTapWhenPresent: 0 }, flexDepts: [] }; // company-sheet formula: employee-level Work Schedule thresholds, day-off taps counted, single taps not completed from Talenta, leave codes never reinterpreted from taps
+const legacyRules = { ...rules, params: { ...rules.params, scheduleBasis: 0, ignoreDayOffTaps: 0, talentaFillsMissingTap: 0, inferHalfDayAlr: 0, leaveWorkedFullDay: 0, forgotTapWhenPresent: 0, missingOutAsEarly: 0 }, flexDepts: [] }; // company-sheet formula: employee-level Work Schedule thresholds, day-off taps counted, single taps not completed from Talenta, leave codes never reinterpreted from taps
 const raw = { fpRows: 0, hrisRows: 0, statusAliased: 0, tapsOutsidePeriod: 0 };
 const hm = (s: string) => +s.slice(0, 2) * 60 + +s.slice(3, 5);
 const tap = (id: string, date: string, t: string, kind: 'in' | 'out' | null = 'in'): Tap => ({ id, org: 'X', date, min: hm(t), kind, raw: kind ?? '?' });

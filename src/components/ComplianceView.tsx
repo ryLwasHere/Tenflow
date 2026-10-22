@@ -46,7 +46,7 @@ export default function ComplianceView({ res, hris, rules, decisions, onReview }
         {TABS.map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}>{l}</button>)}
       </div>
       <div role="tabpanel" aria-label={TABS.find(([k]) => k === tab)![1]}>
-        {tab === 'ringkasan' && <Overview s={s} rows={rows} depts={depts} rules={rules} res={res} onReview={onReview} />}
+        {tab === 'ringkasan' && <Overview s={s} rows={rows} depts={depts} rules={rules} res={res} onReview={onReview} onQuality={() => setTab('kualitas')} />}
         {tab === 'harian' && <Daily days={days} depts={depts} />}
         {tab === 'wfo' && <Wfo rows={rows} depts={depts} P={P} />}
         {tab === 'shift' && <Shifts days={days} basis={P.scheduleBasis} />}
@@ -56,13 +56,13 @@ export default function ComplianceView({ res, hris, rules, decisions, onReview }
   );
 }
 
-function Overview({ s, rows, depts, rules, res, onReview }: { s: ReturnType<typeof evaluateAttendance>['summary']; rows: WfoRow[]; depts: string[]; rules: RuleSet; res: EngineResult; onReview: () => void }) {
+function Overview({ s, rows, depts, rules, res, onReview, onQuality }: { s: ReturnType<typeof evaluateAttendance>['summary']; rows: WfoRow[]; depts: string[]; rules: RuleSet; res: EngineResult; onReview: () => void; onQuality: () => void }) {
   const P = rules.params;
   const byDept = depts.map((d) => { const x = rows.filter((r) => r.dept === d); const req = x.reduce((a, r) => a + r.required, 0), cr = x.reduce((a, r) => a + r.credited, 0); return { d, n: x.length, req, cr, review: x.filter((r) => r.status === 'review').length, bad: x.filter((r) => r.status === 'tidak_patuh').length }; });
   const open = res.flags.filter((f) => f.severity === 'kritis').length;
   return (
     <div className="card-pad stack" style={{ gap: 16 }}>
-      {s.status.review > 0 && <Alert kind="warn" title={`${s.status.review} karyawan berstatus "Perlu review HR"`}>Hasil kepatuhan mereka belum dapat dipastikan karena ada hari yang belum diputuskan atau data pendukung belum ada. Mereka tidak dihitung sebagai pelanggaran. <button className="btn sm" onClick={onReview}>Buka review exception</button></Alert>}
+      {s.status.review > 0 && <Alert kind="warn" title={`${s.status.review} karyawan berstatus "Perlu review HR"`}>Hasil kepatuhan mereka belum dapat dipastikan karena ada hari yang belum diputuskan atau data pendukung belum ada (tanpa fingerprint/Talenta, cuti belum disetujui, kode tanpa rule). Hari seperti itu tidak punya flag, jadi tidak muncul di Review Exception; daftarnya ada di tab Kualitas data. Mereka tidak dihitung sebagai pelanggaran. <button className="btn sm" onClick={onQuality}>Lihat hari yang perlu review</button>{s.byMode.pending > 0 && <> <button className="btn sm" onClick={onReview}>Buka review exception</button></>}</Alert>}
       <div className="metrics">
         <Stat k="Karyawan dievaluasi" v={s.employees} s={`${res.employees.length - s.employees} dikeluarkan oleh HR`} />
         <Stat k="Hadir fisik di kantor" v={s.physical} s={`karyawan dengan ≥1 hari WFO terverifikasi · ${s.byMode.wfo.toLocaleString('id-ID')} hari`} />

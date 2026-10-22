@@ -247,16 +247,17 @@ describe('9c. only a clock-in or only a clock-out', () => {
     it('no flag, counts as present, the missing side is not judged', () => {
       const out = one([tap('1', D(7), '18:00', 'out')], hr(D(7), { code: 'H' }));
       expect(out.flags).toHaveLength(0);
-      expect(out.days[0]).toMatchObject({ gap: '', late: false, early: false });
+      expect(out.days[0]).toMatchObject({ gap: '', late: false, early: false }); // missing clock-in is not judged as late
       expect(out.days[0].note).toContain('dianggap lupa tap');
       const inn = one([tap('1', D(7), '09:00')], hr(D(7), { code: 'H' }));
       expect(inn.flags).toHaveLength(0);
-      expect(inn.days[0]).toMatchObject({ gap: '', late: false, early: false });
+      expect(inn.days[0]).toMatchObject({ gap: '', late: false, early: true }); // forgotten clock-out = Early Clock Out (Config), no flag
+      expect(one([tap('1', D(7), '09:00')], hr(D(7), { code: 'H' }), withParams({ missingOutAsEarly: 0 })).days[0]).toMatchObject({ gap: '', early: false });
       const rows = [hr(D(7), { code: 'H' })];
       expect(dayOf(evaluateAttendance(inn, rows, rules, {}).days, 7)).toMatchObject({ mode: 'wfo', unresolved: false });
     });
     it('the side that exists is still judged: a late clock-in is late even without a clock-out', () => {
-      expect(one([tap('1', D(7), '10:00')], hr(D(7), { code: 'H' })).days[0]).toMatchObject({ late: true, early: false });
+      expect(one([tap('1', D(7), '10:00')], hr(D(7), { code: 'H' })).days[0]).toMatchObject({ late: true, early: true });
     });
     it('only for code H: other codes and the switch off still flag', () => {
       expect(one([tap('1', D(7), '09:00')], hr(D(7), { code: 'ALR' })).flags.map((f) => f.category)).toContain('incomplete');
@@ -283,7 +284,7 @@ describe('9c. only a clock-in or only a clock-out', () => {
       expect(r.days[0]).toMatchObject({ gap: '', late: false, early: true });
       expect(r.days[0].note).toContain('tap terakhir 14:29 dipakai sebagai jam pulang');
       // taps too close together are one tap, not a clock-out
-      expect(com([tap('1', D(7), '08:40'), tap('1', D(7), '09:04')]).days[0]).toMatchObject({ early: false, gap: '' });
+      expect(com([tap('1', D(7), '08:40'), tap('1', D(7), '09:04')]).days[0]).toMatchObject({ early: true, gap: '' }); // still no clock-out: forgotten = Early
       // same for code H outside the flexible department
       expect(one([tap('1', D(7), '09:00'), tap('1', D(7), '14:29')], hr(D(7), { code: 'H' })).days[0]).toMatchObject({ gap: '', early: true });
     });

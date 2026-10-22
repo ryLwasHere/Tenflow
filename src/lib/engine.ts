@@ -178,18 +178,18 @@ export function runEngine(
     // Mislabelled taps: when the first and last tap are at least minWorkMin apart, the last one IS the clock-out (earliest = in, latest = out) and is judged;
     // only a day with no such second tap is one-sided, and then the missing side is not judged.
     const spread = last - first >= P.minWorkMin;
-    let relabelIn = false, relabelOut = false;
+    let relabelIn = false, relabelOut = false, forceEarly = false; // forceEarly: forgotten clock-out counts as Early Clock Out (Config)
     if (forgotH || flex) {
       why = flex ? `divisi ${e.dept} keluar-masuk untuk meeting (Config: divisi fleksibel)` : `HRIS berstatus ${row!.code}, dianggap lupa tap`;
       if (!ins.length && support !== 'in') { if (spread) relabelIn = true; else coverIn = true; }
-      if (!outs.length && support !== 'out') { if (spread) relabelOut = true; else coverOut = true; }
+      if (!outs.length && support !== 'out') { if (spread) relabelOut = true; else { coverOut = true; forceEarly = P.missingOutAsEarly === 1; } }
     }
     if (relabelOut) note += `; tidak ada tap berlabel pulang, tap terakhir ${hhmm(last)} dipakai sebagai jam pulang (${why})`;
     if (relabelIn) note += `; tidak ada tap berlabel masuk, tap pertama ${hhmm(first)} dipakai sebagai jam masuk (${why})`;
     const gapIn = !ins.length && support !== 'in' && !coverIn && !relabelIn, gapOut = !outs.length && support !== 'out' && !coverOut && !relabelOut;
     const waiveLate = !ins.length && coverIn, waiveEarly = !outs.length && coverOut; // the side that is missing but explained is not judged
     if (!ins.length && coverIn) note += `; tap masuk tidak ada (${why}), keterlambatan tidak dinilai`;
-    if (!outs.length && coverOut) note += `; tap pulang tidak ada (${why}), pulang awal tidak dinilai`;
+    if (!outs.length && coverOut) note += forceEarly ? `; tap pulang tidak ada (${why}), dihitung Early Clock Out (Config)` : `; tap pulang tidak ada (${why}), pulang awal tidak dinilai`;
     if (gapIn) flag('incomplete', 'kritis', `Tap masuk tidak ditemukan pada ${where}${row?.tIn != null && P.talentaFillsMissingTap === 1 ? ' (Check In Talenta tidak masuk akal terhadap tap pulang)' : ''}; jam masuk = tap paling awal ${hhmm(first)}`);
     if (gapOut) flag('incomplete', 'kritis', `Tap pulang tidak ditemukan pada ${where}${row?.tOut != null && P.talentaFillsMissingTap === 1 ? ' (Check Out Talenta tidak masuk akal terhadap tap masuk)' : ''}; jam pulang = tap paling akhir ${hhmm(last)}`);
     // Not exceptions: several in/out taps, taps in an odd order, taps outside the shift hours. Clock-in is always the earliest
@@ -204,7 +204,7 @@ export function runEngine(
 
     days.push({
       empId: id, date, shift: row?.shift ?? '', code: row?.code ?? '', first, last,
-      late: evaluated && !waiveLate && first > lateAfter!, early: evaluated && !waiveEarly && last < earlyBefore!, flagIds,
+      late: evaluated && !waiveLate && first > lateAfter!, early: evaluated && (forceEarly || (!waiveEarly && last < earlyBefore!)), flagIds,
       hasIn: ins.length > 0, hasOut: outs.length > 0, support, gap: gapIn ? 'masuk' : gapOut ? 'pulang' : '', evaluated, category: cat?.name ?? null, lateAfter, earlyBefore, note, tapsText,
     });
   }
